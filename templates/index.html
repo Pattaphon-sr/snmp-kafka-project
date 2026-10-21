@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>R1 {{ if_name }} Traffic</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <!-- Flask-SocketIO 5.x speaks Socket.IO protocol v5 = JS client 4.x -->
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+  <style>
+    :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --in:#2563eb; --out:#d97706; --grid:#e5e7eb; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0f1218; --card:#181c24; --text:#e6e8ec; --muted:#9aa1ad; --in:#60a5fa; --out:#fbbf24; --grid:#2a2f3a; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px 16px; background:var(--bg); color:var(--text);
+           font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 1000px; margin: 0 auto; }
+    h1 { font-size: 1.25rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: .9rem; margin-bottom: 20px; }
+    .stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:16px; }
+    .card { background:var(--card); border-radius:10px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    .label { color:var(--muted); font-size:.85rem; }
+    .value { font-size: 2.6rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height:1.1; }
+    .value small { font-size: 1rem; font-weight: 500; color: var(--muted); }
+    .in { color: var(--in); } .out { color: var(--out); }
+    .chart { height: 360px; }
+    #status { font-size:.85rem; }
+    .ok { color:#16a34a; } .bad { color:#dc2626; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>R1 {{ if_name }} realtime traffic</h1>
+  <div class="sub">{{ router_ip }} · SNMP → Kafka "snmp" → Socket.IO · <span id="status" class="bad">connecting…</span></div>
+  <div class="stats">
+    <div class="card"><div class="label">IN</div><div class="value in"><span id="in">–</span> <small>Mbps</small></div></div>
+    <div class="card"><div class="label">OUT</div><div class="value out"><span id="out">–</span> <small>Mbps</small></div></div>
+    <div class="card"><div class="label">Last update</div><div class="value" style="font-size:1.6rem" id="time">–</div></div>
+  </div>
+  <div class="card chart"><canvas id="chart"></canvas></div>
+</main>
+<script>
+  const MAX_POINTS = {{ max_points }};
+  const css = getComputedStyle(document.documentElement);
+  const color = name => css.getPropertyValue(name).trim();
+
+  const chart = new Chart(document.getElementById('chart'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'IN Mbps',  data: [], borderColor: color('--in'),  backgroundColor: color('--in'),  tension: .3, pointRadius: 0, borderWidth: 2 },
+      { label: 'OUT Mbps', data: [], borderColor: color('--out'), backgroundColor: color('--out'), tension: .3, pointRadius: 0, borderWidth: 2 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: color('--muted'), maxTicksLimit: 8 }, grid: { color: color('--grid') } },
+        y: { beginAtZero: true, title: { display: true, text: 'Mbps', color: color('--muted') },
+             ticks: { color: color('--muted') }, grid: { color: color('--grid') } },
+      },
+      plugins: { legend: { labels: { color: color('--text') } } },
+    },
+  });
+
+  function addPoint(d, redraw = true) {
+    const label = (d.time || '').slice(11, 19);
+    chart.data.labels.push(label);
+    chart.data.datasets[0].data.push(d.in_mbps);
+    chart.data.datasets[1].data.push(d.out_mbps);
+    while (chart.data.labels.length > MAX_POINTS) {
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(ds => ds.data.shift());
+    }
+    document.getElementById('in').textContent = Number(d.in_mbps).toFixed(2);
+    document.getElementById('out').textContent = Number(d.out_mbps).toFixed(2);
+    document.getElementById('time').textContent = label;
+    if (redraw) chart.update();
+  }
+
+  const status = document.getElementById('status');
+  const socket = io();
+  socket.on('connect', () => { status.textContent = 'live'; status.className = 'ok'; });
+  socket.on('disconnect', () => { status.textContent = 'disconnected'; status.className = 'bad'; });
+  socket.on('history', points => {
+    chart.data.labels = [];
+    chart.data.datasets.forEach(ds => ds.data = []);
+    points.forEach(p => addPoint(p, false));
+    chart.update();
+  });
+  socket.on('traffic', d => addPoint(d));
+</script>
+</body>
+</html>
